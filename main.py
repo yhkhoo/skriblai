@@ -74,15 +74,13 @@ async def main():
                 print(e)
 
         async def capture():
-            root.info("Captured!")
+            logging.info("Captured!")
             data_url = await page.evaluate("document.querySelector('canvas').toDataURL('image/png')")
-            data = base64.b64decode(data_url.split(',')[1])
-            with open('a.png', 'wb') as f:
-                f.write(data)
             hints = await page.locator(".hints").text_content()
             word_length = await page.locator(".word-length").text_content()
             hints = hints[:-len(word_length)]
             async with httpx.AsyncClient() as client:
+                logging.info("Sending response to API...")
                 response = await client.post(
                     timeout=None,
                     url=OPENROUTER_URL,
@@ -109,13 +107,13 @@ async def main():
                         "reasoning": {"enabled": False},
                     }
                 )
+                logging.info("Response received!")
                 resp = response.json()
-                print(resp)
                 content = resp["choices"][0]["message"]["content"]
-                print(content)
+                guesses = content.split('\n')
+                logging.info("Guesses: " + str(guesses))
                 box = page.locator("#game-chat").locator("input").first
-                print(await box.evaluate("el => el.outerHTML"))
-                for guess in content.split('\n'):
+                for guess in guesses:
                     await box.fill(guess)
                     await box.press("Enter")
                     await asyncio.sleep(0.1)
