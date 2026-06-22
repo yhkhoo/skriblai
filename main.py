@@ -3,7 +3,6 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 import playwright.async_api
 from pynput import keyboard
 import asyncio
-import base64
 import logging
 from logging.handlers import QueueHandler, QueueListener
 import queue
