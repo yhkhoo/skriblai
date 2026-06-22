@@ -63,6 +63,8 @@ async def main():
         page = await browser.new_page()
         await page.route("**/*", route_handler)
         link = await loop.run_in_executor(None, input)
+        if not link:
+            link = "https://skribbl.io"
         await page.goto(link)
 
         async def capture_catch():
