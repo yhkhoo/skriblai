@@ -69,9 +69,7 @@ async def main():
             try:
                 await capture()
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(e)
+                logging.exception(e)
 
         async def capture():
             logging.info("Captured!")
