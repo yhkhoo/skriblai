@@ -1,5 +1,5 @@
 import httpx
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import playwright.async_api
 from pynput import keyboard
 import asyncio
@@ -114,9 +114,16 @@ async def main():
                 logging.info("Guesses: " + str(guesses))
                 box = page.locator("#game-chat").locator("input").first
                 for guess in guesses:
+                    logging.info(f"Guessing: {guess}")
                     await box.fill(guess)
                     await box.press("Enter")
-                    await asyncio.sleep(0.1)
+                    guessed = page.locator(".guessed:has(.me)")
+                    try:
+                        await guessed.wait_for(state="attached", timeout=500)
+                        logging.info("Guessed correctly!")
+                        break
+                    except PlaywrightTimeoutError:
+                        logging.info("Incorrect guess.")
 
         hotkey = keyboard.GlobalHotKeys({'<ctrl>+<f1>': lambda: asyncio.run_coroutine_threadsafe(capture_catch(), loop)})
         hotkey.start()
