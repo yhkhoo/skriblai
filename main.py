@@ -127,7 +127,7 @@ async def main():
                     await box.press("Enter")
                     guessed = page.locator(".guessed:has(.me)")
                     try:
-                        await guessed.wait_for(state="attached", timeout=500)
+                        await guessed.wait_for(state="attached", timeout=1000)
                         logging.info("Guessed correctly!")
                         break
                     except PlaywrightTimeoutError:
