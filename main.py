@@ -19,6 +19,7 @@ PROMPT = """
 You are playing skribbl.io. Guess the word.
 Format:
 Output your top 3 guesses, one on each line, with no additional text.
+
 """
 SCHEMA = {
     "type": "json_schema",
@@ -84,7 +85,7 @@ async def main():
             word_length = await page.locator(".word-length").text_content()
             hints = hints[:-len(word_length)]
             logging.info("Hint: " + hints)
-            words = f"\nThe answer has {len(word_length.split())} words. " + "".join(f"Word {i} has {length} letters. " for i, length in enumerate(word_length.split(), start=1))
+            words = f"The answer has {len(word_length.split())} words. " + "".join(f"Word {i} has {length} letters. " for i, length in enumerate(word_length.split(), start=1))
             logging.info("Words: " + words)
             async with httpx.AsyncClient() as client:
                 logging.info("Sending response to API...")
