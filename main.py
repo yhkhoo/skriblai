@@ -72,7 +72,6 @@ async def main():
         }""")
 
         async def capture_catch():
-            logging.info("It activated")
             try:
                 await capture()
             except Exception as e:
