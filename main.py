@@ -1,7 +1,6 @@
 import httpx
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import playwright.async_api
-from pynput import keyboard
 import asyncio
 import logging
 from logging.handlers import QueueHandler, QueueListener
@@ -15,17 +14,11 @@ HEADERS = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "Content-Type": "application/json",
 }
-MODEL = "google/gemma-4-31b-it:free"
+MODEL = "google/gemini-3.7-flash:floor"
 PROMPT = """
-You are playing skribbl.io. Given a drawing and hint, analyse them to guess the word.
+You are playing skribbl.io. Guess the word.
 Format:
 Output your top 3 guesses, one on each line, with no additional text.
-An example of a hint (not the actual hint): 'h__ ___'. This hint means that the answer is comprised of two words, each being 3 letters long, and the first letter of the first word is an 'h'.
-Your answer MUST:
-- Match the number of blanks exactly
-- Use any revealed letters in their correct positions
-- Be a common English word or phrase (skribbl.io uses common words)
-Words are not just nouns, they can be verbs, adjectives, adverbs, but are always from everyday vocabulary.
 """
 SCHEMA = {
     "type": "json_schema",
@@ -58,15 +51,28 @@ async def route_handler(route: playwright.async_api.Route):
 async def main():
     loop = asyncio.get_event_loop()
     async with async_playwright() as p:
-        browser = await p.chromium.launch(channel="msedge", headless=False)
-        page = await browser.new_page()
+        browser = await p.firefox.launch(headless=False)
+        context = await browser.new_context(
+            no_viewport=True
+        )
+        page = await context.new_page()
         await page.route("**/*", route_handler)
         link = await loop.run_in_executor(None, input)
         if not link:
             link = "https://skribbl.io"
         await page.goto(link)
+        # Force inject floating button directly into rendered page
+        await page.expose_function("pythonCapture", lambda: asyncio.create_task(capture_catch()))
+        await page.evaluate("""() => {
+            const btn = document.createElement('button');
+            btn.innerText = '⚡ SOLVE GAME';
+            btn.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:999999999;padding:15px 30px;background:#2563eb;color:#fff;font-size:18px;font-weight:bold;border:none;border-radius:10px;cursor:pointer;box-shadow:0 0 15px rgba(0,0,0,0.5);';
+            btn.onclick = () => window.pythonCapture();
+            document.body.appendChild(btn);
+        }""")
 
         async def capture_catch():
+            logging.info("It activated")
             try:
                 await capture()
             except Exception as e:
@@ -78,6 +84,9 @@ async def main():
             hints = await page.locator(".hints").text_content()
             word_length = await page.locator(".word-length").text_content()
             hints = hints[:-len(word_length)]
+            logging.info("Hint: " + hints)
+            words = f"\nThe answer has {len(word_length.split())} words." + "".join(f"Word {i} has {length} letters. " for i, length in enumerate(word_length.split(), start=1))
+            logging.info("Words: " + words)
             async with httpx.AsyncClient() as client:
                 logging.info("Sending response to API...")
                 response = await client.post(
@@ -92,7 +101,7 @@ async def main():
                                 "content": [
                                     {
                                         "type": "text",
-                                        "text": PROMPT + "\n\n Hint: " + hints
+                                        "text": PROMPT + words
                                     },
                                     {
                                         "type": "image_url",
@@ -103,7 +112,7 @@ async def main():
                                 ]
                             },
                         ],
-                        "reasoning": {"enabled": False},
+                        "reasoning": {"effort": "minimal"},
                     }
                 )
                 logging.info("Response received!")
@@ -124,10 +133,7 @@ async def main():
                     except PlaywrightTimeoutError:
                         logging.info("Incorrect guess.")
 
-        hotkey = keyboard.GlobalHotKeys({'<ctrl>+<f1>': lambda: asyncio.run_coroutine_threadsafe(capture_catch(), loop)})
-        hotkey.start()
-        while hotkey.is_alive():
-            await asyncio.sleep(0.1)
+        await page.wait_for_event("close", timeout=0)
 
 if __name__ == "__main__":
     que = queue.Queue(-1)
