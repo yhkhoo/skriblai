@@ -49,6 +49,19 @@ async def route_handler(route: playwright.async_api.Route):
     else:
         await route.abort()
 
+async def submit_guess(page, box, guess):
+    logging.info(f"Guessing: {guess}")
+    await box.fill(guess)
+    await box.press("Enter")
+    guessed = page.locator(".guessed:has(.me)")
+    try:
+        await guessed.wait_for(state="attached", timeout=1000)
+        logging.info("Guessed correctly!")
+        return True
+    except PlaywrightTimeoutError:
+        logging.info("Incorrect guess.")
+        return False
+
 async def main():
     loop = asyncio.get_event_loop()
     async with async_playwright() as p:
@@ -122,16 +135,8 @@ async def main():
                 logging.info("Guesses: " + str(guesses))
                 box = page.locator("#game-chat").locator("input").first
                 for guess in guesses:
-                    logging.info(f"Guessing: {guess}")
-                    await box.fill(guess)
-                    await box.press("Enter")
-                    guessed = page.locator(".guessed:has(.me)")
-                    try:
-                        await guessed.wait_for(state="attached", timeout=1000)
-                        logging.info("Guessed correctly!")
+                    if await submit_guess(page, box, guess):
                         break
-                    except PlaywrightTimeoutError:
-                        logging.info("Incorrect guess.")
 
         await page.wait_for_event("close", timeout=0)
 
