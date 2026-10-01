@@ -101,7 +101,7 @@ async def main():
                                 "content": [
                                     {
                                         "type": "text",
-                                        "text": PROMPT + words
+                                        "text": PROMPT + words + "\nHint: " + hints
                                     },
                                     {
                                         "type": "image_url",
