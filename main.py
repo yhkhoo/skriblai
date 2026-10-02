@@ -141,10 +141,10 @@ async def main():
         await page.wait_for_event("close", timeout=0)
 
 if __name__ == "__main__":
-    que = queue.Queue(-1)
-    queue_handler = QueueHandler(que)
+    log_queue = queue.Queue(-1)
+    queue_handler = QueueHandler(log_queue)
     handler = logging.FileHandler("latest.log")
-    listener = QueueListener(que, handler)
+    listener = QueueListener(log_queue, handler)
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(queue_handler)
