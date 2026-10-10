@@ -8,13 +8,13 @@ import queue
 import re
 from os import getenv
 
-OPENROUTER_API_KEY = getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = getenv("OPENROUTER_FREE_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "Content-Type": "application/json",
 }
-MODEL = "google/gemini-3.7-flash:floor"
+MODEL = "google/gemini-3.5-flash-lite"
 PROMPT = """
 You are playing skribbl.io. Guess the word.
 Format:
