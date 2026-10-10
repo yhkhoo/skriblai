@@ -7,6 +7,8 @@ from logging.handlers import QueueHandler, QueueListener
 import queue
 import re
 from os import getenv
+import qasync
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QVBoxLayout
 
 OPENROUTER_API_KEY = getenv("OPENROUTER_FREE_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -43,6 +45,57 @@ SCHEMA = {
     },
 }
 
+class GuessDialog(QDialog):
+    """Non-modal dialog with one button per guess.
+
+    Stays open across submissions; each click resolves the future returned
+    by next_choice() with the chosen guess. Cancel/close resolves it with None.
+    """
+
+    def __init__(self, guesses, hint, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Choose a guess")
+        self._future = None
+        self._pending = []
+        layout = QVBoxLayout(self)
+        hint_label = QLabel(hint)
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        layout.addWidget(QLabel("Click a guess to submit it:"))
+        for guess in guesses:
+            button = QPushButton(guess)
+            button.clicked.connect(lambda checked=False, g=guess: self._resolve(g))
+            layout.addWidget(button)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self._cancel)
+        layout.addWidget(cancel)
+
+    def next_choice(self):
+        """Await this to get the next guess clicked (or None if cancelled)."""
+        loop = asyncio.get_running_loop()
+        if self._pending:
+            future = loop.create_future()
+            future.set_result(self._pending.pop(0))
+            return future
+        self._future = loop.create_future()
+        return self._future
+
+    def _resolve(self, value):
+        if self._future is None or self._future.done():
+            # A click arrived while we're submitting or between choices.
+            self._pending.append(value)
+            return
+        future, self._future = self._future, None
+        future.get_loop().call_soon_threadsafe(future.set_result, value)
+
+    def _cancel(self):
+        self._resolve(None)
+        self.close()
+
+    def closeEvent(self, event):
+        self._resolve(None)
+        super().closeEvent(event)
+
 async def route_handler(route: playwright.async_api.Route):
     if re.match(r"^(?:https?:\/\/)(skribbl\.io|fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net).*", route.request.url):
         await route.continue_()
@@ -64,6 +117,7 @@ async def submit_guess(page, box, guess):
 
 async def main():
     loop = asyncio.get_event_loop()
+    guess_dialog = None
     async with async_playwright() as p:
         browser = await p.firefox.launch(headless=False)
         context = await browser.new_context(
@@ -92,6 +146,7 @@ async def main():
                 logging.exception(e)
 
         async def capture():
+            nonlocal guess_dialog
             logging.info("Captured!")
             data_url = await page.evaluate("document.querySelector('canvas').toDataURL('image/png')")
             hints = await page.locator(".hints").text_content()
@@ -134,11 +189,25 @@ async def main():
                 guesses = content.split('\n')
                 logging.info("Guesses: " + str(guesses))
                 box = page.locator("#game-chat").locator("input").first
-                for guess in guesses:
-                    if await submit_guess(page, box, guess):
-                        break
+                guess_dialog = GuessDialog(
+                    guesses,
+                    f"Hint: {hints}\nWord lengths: {word_length}",
+                )
+                guess_dialog.show()
+                try:
+                    while True:
+                        choice = await guess_dialog.next_choice()
+                        if choice is None:
+                            break
+                        if await submit_guess(page, box, choice):
+                            break
+                finally:
+                    guess_dialog.close()
+                    guess_dialog = None
 
         await page.wait_for_event("close", timeout=0)
+        if guess_dialog is not None:
+            guess_dialog.close()
 
 if __name__ == "__main__":
     log_queue = queue.Queue(-1)
@@ -153,4 +222,11 @@ if __name__ == "__main__":
     listener.start()
     root.warning("Woah!")
 
-    asyncio.run(main())
+    app = QApplication([])
+    # The guess dialog is the only Qt window; closing it must not quit the
+    # event loop while main() (Playwright) is still running.
+    app.setQuitOnLastWindowClosed(False)
+    loop = qasync.QEventLoop(app)
+    asyncio.set_event_loop(loop)
+    with loop:
+        loop.run_until_complete(main())
