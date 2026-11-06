@@ -134,7 +134,7 @@ async def main():
         await page.evaluate("""() => {
             const btn = document.createElement('button');
             btn.innerText = '⚡ SOLVE GAME';
-            btn.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:999999999;padding:15px 30px;background:#2563eb;color:#fff;font-size:18px;font-weight:bold;border:none;border-radius:10px;cursor:pointer;box-shadow:0 0 15px rgba(0,0,0,0.5);';
+            btn.style.cssText = 'position:fixed;top:20px;right:20px;z-index:999999999;padding:15px 30px;background:#2563eb;color:#fff;font-size:18px;font-weight:bold;border:none;border-radius:10px;cursor:pointer;box-shadow:0 0 15px rgba(0,0,0,0.5);';
             btn.onclick = () => window.pythonCapture();
             document.body.appendChild(btn);
         }""")
