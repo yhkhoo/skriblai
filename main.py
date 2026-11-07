@@ -10,17 +10,17 @@ from os import getenv
 import qasync
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QVBoxLayout
 
-OPENROUTER_API_KEY = getenv("OPENROUTER_FREE_KEY")
+OPENROUTER_API_KEY = getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "Content-Type": "application/json",
 }
-MODEL = "google/gemini-3.5-flash-lite"
+MODEL = "google/gemini-3.6-flash"
 PROMPT = """
 You are playing skribbl.io. Guess the word.
 Format:
-Output your top 3 guesses, one on each line, with no additional text.
+Output your top 5 guesses, one on each line, with no additional text.
 
 """
 SCHEMA = {
@@ -163,6 +163,7 @@ async def main():
                     headers=HEADERS,
                     json={
                         "model": MODEL,
+                        "service_tier": "flex",
                         "messages": [
                             {
                                 "role": "user",
@@ -181,6 +182,9 @@ async def main():
                             },
                         ],
                         "reasoning": {"effort": "minimal"},
+                        "provider": {
+                            "only" : ["google-ai-studio"]
+                        }
                     }
                 )
                 logging.info("Response received!")
