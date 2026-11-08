@@ -49,8 +49,31 @@ SCHEMA = {
 # Drawing side: the canvas has a fixed internal resolution of 800x600,
 # everything the model outputs is expressed in that coordinate space.
 CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
-DRAW_MODEL = "deepseek-v4.1-flash-1017"
+DRAW_MODEL = "openai/gpt-6-luna:floor"
 MAX_DRAW_POINTS = 1600  # ~24s of drawing at the game's input throttle
+# skribbl.io's 26 swatches in the order they appear in the DOM (the page fills
+# the toolbar with a top row of even palette indices and a bottom row of odd
+# ones - see js/game.js), so index i here is colors.nth(i) in the browser.
+DEFAULT_PALETTE = [
+    "#ffffff", "#c1c1c1", "#ef130b", "#ff7100", "#ffe400", "#00cc00",
+    "#00ff91", "#00b2ff", "#231fd3", "#a300ba", "#df69a7", "#ffac8e",
+    "#a0522d", "#000000", "#505050", "#740b07", "#c23800", "#e8a200",
+    "#004619", "#00785d", "#00569e", "#0e0865", "#550069", "#873554",
+    "#cc774d", "#63300d",
+]
+# Names for the default swatches, so the model can reason in "apple red"
+# instead of raw hex values. Unknown colors (custom skins) just show the hex.
+COLOR_NAMES = {
+    "#ffffff": "White", "#c1c1c1": "Light Gray", "#ef130b": "Red",
+    "#ff7100": "Orange", "#ffe400": "Yellow", "#00cc00": "Green",
+    "#00ff91": "Mint", "#00b2ff": "Skyblue", "#231fd3": "Seablue",
+    "#a300ba": "Purple", "#df69a7": "Pink",
+    "#ffac8e": "Beige", "#a0522d": "Brown", "#000000": "Black",
+    "#505050": "Gray", "#740b07": "Dark Red", "#c23800": "Dark Orange",
+    "#e8a200": "Dark Yellow", "#004619": "Dark Green", "#00785d": "Dark Mint",
+    "#00569e": "Dark Skyblue", "#0e0865": "Dark Seablue", "#550069": "Dark Purple",
+    "#873554": "Dark Pink", "#cc774d": "Dark Beige", "#63300d": "Dark Brown",
+}
 DRAW_PROMPT = """
 You are playing skribbl.io and it is your turn to draw the word: __WORD__.
 
@@ -58,17 +81,20 @@ Describe ONE simple pictionary-style line drawing of that word as stroke data.
 
 Rules:
 - The coordinate space is 800 x 600 pixels, origin top-left, x grows right, y grows down.
-- Use 15 to 40 strokes. Each stroke is one continuous pen movement of 3 to 30 points.
-- Draw a single large object, centered, filling most of the canvas with bold outlines.
-- Outlines only: no shading, no hatching, no filled areas, no guides, no arrows.
+- Use 15 to 50 strokes. Each stroke is one continuous pen movement of 3 to 30 points.
+- Every stroke is an object: {"points": [[x,y],...], "color": "#rrggbb"}.
+- "color" MUST be one of these exact hex values: __PALETTE__.
+- Avoid White (#ffffff): the canvas is white, so white strokes are invisible.
+- Outlines only: no shading, no hatching, no filled areas, no guides.
 - NEVER write letters, numbers or any other text (spelling the word is forbidden).
 - Every coordinate must stay inside 0-800 / 0-600.
+- Have fun with the drawing! You may add additional things for context or to improve the drawing.
 
 Output ONLY a JSON object in exactly this shape, no markdown, no commentary:
-{"strokes": [ [[x,y],[x,y],...], ... ]}
+{"strokes": [{"points": [[x,y],[x,y],...], "color": "#000000"}, ...]}
 
 Example for the word "house":
-{"strokes": [[[140,470],[140,270],[400,130],[660,270],[660,470],[140,470]], [[320,470],[320,330],[500,330],[500,470]], [[180,300],[260,300],[260,370],[180,370],[180,300]]]}
+{"strokes": [{"points": [[140,470],[140,270],[400,130],[660,270],[660,470],[140,470]], "color": "#000000"}, {"points": [[320,470],[320,330],[500,330],[500,470]], "color": "#a0522d"}, {"points": [[180,300],[260,300],[260,370],[180,370],[180,300]], "color": "#00b2ff"}]}
 """.strip()
 STROKES_SCHEMA = {
     "type": "json_schema",
@@ -81,8 +107,16 @@ STROKES_SCHEMA = {
                 "strokes": {
                     "type": "array",
                     "items": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"type": "number"}},
+                        "type": "object",
+                        "properties": {
+                            "points": {
+                                "type": "array",
+                                "items": {"type": "array", "items": {"type": "number"}},
+                            },
+                            "color": {"type": "string"},
+                        },
+                        "required": ["points", "color"],
+                        "additionalProperties": False,
                     },
                 },
             },
@@ -162,6 +196,39 @@ async def submit_guess(page, box, guess):
         logging.info("Incorrect guess.")
         return False
 
+def hex_to_rgb(value):
+    """Parse '#rgb' / '#rrggbb' into (r, g, b), or None if it isn't a color."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(c * 2 for c in text)
+    if len(text) != 6 or not re.fullmatch(r"[0-9a-fA-F]{6}", text):
+        return None
+    return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
+
+def nearest_color(color, palette):
+    """Index of the palette swatch closest to `color`, or None if it can't tell."""
+    rgb = hex_to_rgb(color)
+    if rgb is None or not palette:
+        return None
+    best, best_distance = None, None
+    for i, entry in enumerate(palette):
+        other = hex_to_rgb(entry)
+        if other is None:
+            continue
+        distance = sum((a - b) ** 2 for a, b in zip(rgb, other))
+        if best_distance is None or distance < best_distance:
+            best, best_distance = i, distance
+    return best
+
+def describe_palette(palette):
+    """Format the swatches for the prompt, e.g. 'Red (#ef130b), Black (#000000)'."""
+    return ", ".join(
+        f"{COLOR_NAMES[entry]} ({entry})" if entry in COLOR_NAMES else entry
+        for entry in palette
+    )
+
 def parse_strokes_json(content):
     """Pull the strokes object out of the model's reply (tolerates code fences)."""
     text = content.strip()
@@ -172,17 +239,26 @@ def parse_strokes_json(content):
         raise ValueError("no JSON object in the model output")
     return json.loads(text[start:end + 1])
 
-def validate_strokes(data, max_points=MAX_DRAW_POINTS, max_points_per_stroke=40):
+def validate_strokes(data, palette, max_points=MAX_DRAW_POINTS, max_points_per_stroke=40):
     """Clamp, dedupe and budget the model's strokes.
 
-    Raises ValueError when the output is too broken to draw - the caller
-    retries with the failure fed back to the model.
+    Each returned stroke is (points, swatch_index); colors are snapped to the
+    closest entry of `palette` so an off-palette hex still lands on a real
+    swatch. Raises ValueError when the output is too broken to draw - the
+    caller retries with the failure fed back to the model.
     """
     strokes = data.get("strokes") if isinstance(data, dict) else None
     if not isinstance(strokes, list):
         raise ValueError("missing 'strokes' array")
+    default_color = nearest_color("#000000", palette)
+    if default_color is None:
+        default_color = 0
     clean, total = [], 0
     for raw in strokes:
+        color = None
+        if isinstance(raw, dict):
+            color = raw.get("color")
+            raw = raw.get("points")
         if not isinstance(raw, list):
             continue
         points = []
@@ -210,7 +286,8 @@ def validate_strokes(data, max_points=MAX_DRAW_POINTS, max_points_per_stroke=40)
         if room < 2:
             break
         points = points[:room]
-        clean.append(points)
+        color_index = nearest_color(color, palette)
+        clean.append((points, default_color if color_index is None else color_index))
         total += len(points)
     if not clean:
         raise ValueError("no usable strokes in the model output")
@@ -218,16 +295,24 @@ def validate_strokes(data, max_points=MAX_DRAW_POINTS, max_points_per_stroke=40)
         raise ValueError(f"only {len(clean)} usable strokes, drawing looks empty")
     return clean
 
-async def generate_strokes(word, attempts=2):
-    """Ask the LLM to draw `word`; returns polylines in 800x600 canvas space."""
-    messages = [{"role": "user", "content": DRAW_PROMPT.replace("__WORD__", word)}]
+async def generate_strokes(word, palette, attempts=2):
+    """Ask the LLM to draw `word`.
+
+    Returns (points, swatch_index) strokes in 800x600 canvas space, where the
+    swatch index points into `palette`.
+    """
+    prompt = (
+        DRAW_PROMPT
+        .replace("__WORD__", word)
+        .replace("__PALETTE__", describe_palette(palette))
+    )
+    messages = [{"role": "user", "content": prompt}]
     last_error = "unknown error"
     for attempt in range(attempts):
         payload = {
             "model": DRAW_MODEL,
             "messages": messages,
-            "reasoning": {"effort": "minimal"},
-            "provider": {"only": ["baidu"]},
+            "reasoning": {"effort": "medium"},
         }
         # Structured output first; the retry drops it in case the
         # provider rejects response_format outright.
@@ -251,7 +336,7 @@ async def generate_strokes(word, attempts=2):
             last_error = f"{type(e).__name__}: {e}"
         if content:
             try:
-                strokes = validate_strokes(parse_strokes_json(content))
+                strokes = validate_strokes(parse_strokes_json(content), palette)
                 logging.info("Stroke data is valid.")
                 return strokes
             except ValueError as e:
@@ -262,27 +347,45 @@ async def generate_strokes(word, attempts=2):
             "role": "user",
             "content": (
                 f"That failed ({last_error}). Return ONLY a JSON object of the form "
-                '{"strokes": [[[x,y],[x,y],...], ...]} for the word '
-                f"{word}: 15-40 outline strokes, 800x600 coordinates, no text."
+                '{"strokes": [{"points": [[x,y],...], "color": "#rrggbb"}, ...]} '
+                f"for the word {word}: 15-40 outline strokes, colors from "
+                f"[{describe_palette(palette)}], 800x600 coordinates, no text."
             ),
         })
     raise RuntimeError(f"could not generate a drawing: {last_error}")
 
-async def setup_brush(page, size_index=1):
-    """Pick a black, medium brush - only takes effect during our own turn."""
-    colors = page.locator("#game-toolbar .colors .color")
-    black_index = await page.evaluate("""() => {
-        const swatches = document.querySelectorAll('#game-toolbar .colors .color');
-        for (let i = 0; i < swatches.length; i++) {
-            if (getComputedStyle(swatches[i]).backgroundColor === 'rgb(0, 0, 0)') return i;
-        }
-        return -1;
+async def read_palette(page):
+    """Read the toolbar's swatches as '#rrggbb' strings, in DOM order.
+
+    The position in the returned list is the swatch index used everywhere
+    else, so it must match the page's own ordering. Falls back to the known
+    default palette if the toolbar can't be read.
+    """
+    palette = await page.evaluate("""() => {
+        const toHex = (value) => {
+            const m = (value || '').match(/\\d+(\\.\\d+)?/g);
+            if (!m || m.length < 3) return null;
+            return '#' + m.slice(0, 3)
+                .map(n => Math.round(+n).toString(16).padStart(2, '0')).join('');
+        };
+        return Array.from(document.querySelectorAll('#game-toolbar .colors .color'))
+            .map(el => toHex(getComputedStyle(el).backgroundColor) || '#000000');
     }""")
-    if 0 <= black_index < await colors.count():
-        await colors.nth(black_index).click()
-        logging.info(f"Brush color: black (swatch {black_index})")
-    elif await colors.count():
-        await colors.first.click()
+    if not palette:
+        logging.warning("No color swatches found, falling back to the default palette.")
+        palette = list(DEFAULT_PALETTE)
+    return palette
+
+async def setup_brush(page, palette, size_index=1):
+    """Pick black and a medium brush - only takes effect during our own turn."""
+    colors = page.locator("#game-toolbar .colors .color")
+    swatch_count = await colors.count()
+    if swatch_count:
+        black = nearest_color("#000000", palette)
+        if black is None or black >= swatch_count:
+            black = 0
+        await colors.nth(black).click()
+        logging.info(f"Brush color: black (swatch {black})")
     sizes = page.locator("#game-toolbar .sizes .size")
     if not await sizes.count():
         return
@@ -306,11 +409,13 @@ async def turn_active(page):
     except Exception:
         return False
 
-async def draw_strokes(page, strokes, delay=0.015):
-    """Replay the polylines as mouse input on the game canvas.
+async def draw_strokes(page, strokes, palette, delay=0.015):
+    """Replay the colored polylines as mouse input on the game canvas.
 
     The client keeps at most ~90 points/second and batches 8 points per
-    50ms to the server, so 15ms per point stays lossless.
+    50ms to the server, so 15ms per point stays lossless. The toolbar swatch
+    is only clicked when the color actually changes, and always between
+    strokes - never while the pen is down.
     """
     canvas = page.locator("#game-canvas canvas")
     box = await canvas.bounding_box()
@@ -318,15 +423,29 @@ async def draw_strokes(page, strokes, delay=0.015):
         raise RuntimeError("drawing canvas is not visible")
     scale_x = box["width"] / CANVAS_WIDTH
     scale_y = box["height"] / CANVAS_HEIGHT
+    colors = page.locator("#game-toolbar .colors .color")
+    swatch_count = await colors.count() if palette else 0
+    # setup_brush() left us on black; mirror that so the first stroke doesn't
+    # click a swatch it is already using.
+    current = nearest_color("#000000", palette)
+    broken = set()
     drawn = 0
-    for stroke in strokes:
+    for points, color_index in strokes:
         if not await turn_active(page):
             logging.info("Turn ended, stopping the drawing.")
             break
-        points = [(box["x"] + x * scale_x, box["y"] + y * scale_y) for x, y in stroke]
-        await page.mouse.move(*points[0])
+        if color_index != current and color_index < swatch_count and color_index not in broken:
+            try:
+                await colors.nth(color_index).click(timeout=1000)
+                current = color_index
+            except PlaywrightTimeoutError:
+                # Not worth stalling the turn - keep drawing in the current color.
+                logging.warning(f"Could not select color swatch {color_index}, skipping it.")
+                broken.add(color_index)
+        screen_points = [(box["x"] + x * scale_x, box["y"] + y * scale_y) for x, y in points]
+        await page.mouse.move(*screen_points[0])
         await page.mouse.down()
-        for px, py in points[1:]:
+        for px, py in screen_points[1:]:
             await page.mouse.move(px, py)
             await asyncio.sleep(delay)
         await page.mouse.up()
@@ -468,10 +587,13 @@ async def main():
                 logging.info("No word selected - pick a word first, then hit AI DRAW.")
                 return
             logging.info(f"Drawing the word: {word}")
-            strokes = await generate_strokes(word)
-            logging.info(f"Got {len(strokes)} strokes, {sum(len(s) for s in strokes)} points.")
-            await setup_brush(page)
-            await draw_strokes(page, strokes)
+            palette = await read_palette(page)
+            strokes = await generate_strokes(word, palette)
+            logging.info(
+                f"Got {len(strokes)} strokes, {sum(len(p) for p, _ in strokes)} points."
+            )
+            await setup_brush(page, palette)
+            await draw_strokes(page, strokes, palette)
             logging.info("AI drawing finished.")
 
         async def draw_catch():
