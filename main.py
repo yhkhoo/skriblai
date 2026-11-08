@@ -458,15 +458,15 @@ async def main():
     guess_dialog = None
     drawing = False
     async with async_playwright() as p:
+        link = await loop.run_in_executor(None, input)
+        if not link:
+            link = "https://skribbl.io"
         browser = await p.firefox.launch(headless=False)
         context = await browser.new_context(
             no_viewport=True
         )
         page = await context.new_page()
         await page.route("**/*", route_handler)
-        link = await loop.run_in_executor(None, input)
-        if not link:
-            link = "https://skribbl.io"
         await page.goto(link)
         # Force inject floating buttons directly into rendered page
         await page.expose_function("pythonCapture", lambda: asyncio.create_task(capture_catch()))
