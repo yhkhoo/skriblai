@@ -37,6 +37,7 @@ SCHEMA = {
 }
 
 _current_dialog: "GuessDialog | None" = None
+_guessing = False
 
 
 class GuessDialog(QDialog):
@@ -97,6 +98,19 @@ def close_guess_dialog():
     if _current_dialog is not None:
         _current_dialog.close()
         _current_dialog = None
+
+
+async def set_guess_button(page, busy):
+    """Update the SOLVE GAME button label and disabled state in the DOM."""
+    try:
+        await page.evaluate("""(busy) => {
+            const btn = document.getElementById('skriblai-solve');
+            if (!btn) return;
+            btn.disabled = busy;
+            btn.innerText = busy ? '⚡ SOLVING...' : '⚡ SOLVE GAME';
+        }""", busy)
+    except Exception:
+        pass  # page may be closing
 
 
 async def submit_guess(page, box, guess):
@@ -197,11 +211,20 @@ capture = guess_turn
 
 
 async def handle_guess(page):
-    """Wrapper that catches and logs any exceptions during guess handling."""
+    """Wrapper that manages guessing state, button updates, and runs the guess turn."""
+    global _guessing
+    if _guessing:
+        logging.info("A guess is already in progress.")
+        return
+    _guessing = True
+    await set_guess_button(page, True)
     try:
         await guess_turn(page)
     except Exception as e:
         logging.exception(e)
+    finally:
+        _guessing = False
+        await set_guess_button(page, False)
 
 
 capture_catch = handle_guess
