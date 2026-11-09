@@ -128,13 +128,39 @@ async def submit_guess(page, box, guess):
         return False
 
 
-async def request_guesses(data_url: str, hints: str, word_length: str) -> list[str]:
-    """Send canvas image and hints to the LLM to get candidate guesses."""
-    words = f"The answer has {len(word_length.split())} words. " + "".join(
-        f"Word {i} has {length} letters. " for i, length in enumerate(word_length.split(), start=1)
+def build_words_text(word_length: str) -> str:
+    """Describe the word lengths, or note they are hidden in hidden mode."""
+    parts = word_length.split()
+    if not parts:
+        return "The word length is hidden. "
+    return f"The answer has {len(parts)} words. " + "".join(
+        f"Word {i} has {length} letters. " for i, length in enumerate(parts, start=1)
     )
-    logging.info("Hint: " + hints)
-    logging.info("Words: " + words)
+
+
+async def get_word_length(page) -> str:
+    """Read the word-length element, or '' in hidden mode where it doesn't exist."""
+    try:
+        return (await page.locator(".word-length").text_content(timeout=2000) or "").strip()
+    except PlaywrightTimeoutError:
+        logging.info("No .word-length element; game is in hidden mode.")
+        return ""
+
+
+async def request_guesses(data_url: str, hints: str, word_length: str) -> list[str]:
+    """Send canvas image and hints to the LLM to get candidate guesses.
+
+    Empty hints/word_length (hidden mode) are omitted from the prompt entirely.
+    """
+    logging.info("Hint: " + (hints or "(hidden)"))
+    logging.info("Words: " + (word_length or "(hidden)"))
+    text = PROMPT
+    if word_length:
+        words = build_words_text(word_length)
+        logging.info("Words sentence: " + words)
+        text += words
+    if hints:
+        text += "\nHint: " + hints
     async with httpx.AsyncClient() as client:
         logging.info("Sending response to API...")
         response = await client.post(
@@ -150,7 +176,7 @@ async def request_guesses(data_url: str, hints: str, word_length: str) -> list[s
                         "content": [
                             {
                                 "type": "text",
-                                "text": PROMPT + words + "\nHint: " + hints,
+                                "text": text,
                             },
                             {
                                 "type": "image_url",
@@ -184,14 +210,22 @@ async def guess_turn(page):
     logging.info("Captured!")
     data_url = await page.evaluate("document.querySelector('canvas').toDataURL('image/png')")
     hints_text = await page.locator(".hints").text_content() or ""
-    word_length_text = await page.locator(".word-length").text_content() or ""
-    hints = hints_text[:-len(word_length_text)] if len(word_length_text) > 0 else hints_text
+    word_length_text = await get_word_length(page)
+    # In visible mode the word-length element sits inside .hints; strip it off.
+    hints = hints_text.strip()
+    if word_length_text and hints.endswith(word_length_text):
+        hints = hints[:-len(word_length_text)].strip()
+    # Hidden mode: there is no .word-length element and the hint shows "???".
+    # Neither conveys any information, so drop both and guess from the drawing.
+    if not word_length_text or all(char in "? " for char in hints):
+        hints = word_length_text = ""
+        logging.info("Hidden mode detected; no hint or word length to pass.")
 
     guesses = await request_guesses(data_url, hints, word_length_text)
     box = page.locator("#game-chat").locator("input").first
     _current_dialog = GuessDialog(
         guesses,
-        f"Hint: {hints}\nWord lengths: {word_length_text}",
+        f"Hint: {hints or '(hidden)'}\nWord lengths: {word_length_text or '(hidden)'}",
     )
     _current_dialog.show()
     try:
